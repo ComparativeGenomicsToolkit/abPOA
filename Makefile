@@ -1,6 +1,6 @@
 #CC          = gcc
 EXTRA_FLAGS = -Wno-unused-function -Wno-misleading-indentation
-CFLAGS      += -Wall -O3 $(EXTRA_FLAGS)
+CFLAGS      = -Wall -O3 $(EXTRA_FLAGS)
 
 # for debug
 ifneq ($(debug),)
@@ -8,9 +8,9 @@ ifneq ($(debug),)
 endif
 # for gdb
 ifneq ($(gdb),)
-	CFLAGS   += -Wall -g ${DFLAGS} $(EXTRA_FLAGS)
+	CFLAGS   = -Wall -g ${DFLAGS} $(EXTRA_FLAGS)
 else
-	CFLAGS   += -Wall -O3 ${DFLAGS} $(EXTRA_FLAGS)
+	CFLAGS   = -Wall -O3 ${DFLAGS} $(EXTRA_FLAGS)
 endif
 
 # for gprof
@@ -65,6 +65,7 @@ endif
 # Let CACTUS_ARCH override this (it'll add -march to CFLAGS) in order to avoid -march native for more portable binaries
 ifneq ($(CACTUS_ARCH),)
 	SIMD_FLAG =
+	CFLAGS += -march=$(CACTUS_ARCH)
 endif
 
 .c.o:
