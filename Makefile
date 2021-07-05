@@ -1,6 +1,6 @@
 #CC          = gcc
 EXTRA_FLAGS = -Wno-unused-function -Wno-misleading-indentation
-CFLAGS      += -Wall -O3 $(EXTRA_FLAGS)
+CFLAGS      = -Wall -O3 $(EXTRA_FLAGS)
 
 # for debug
 ifneq ($(debug),)
@@ -8,9 +8,9 @@ ifneq ($(debug),)
 endif
 # for gdb
 ifneq ($(gdb),)
-	CFLAGS   += -Wall -g ${DFLAGS} $(EXTRA_FLAGS)
+	CFLAGS   = -Wall -g ${DFLAGS} $(EXTRA_FLAGS)
 else
-	CFLAGS   += -Wall -O3 ${DFLAGS} $(EXTRA_FLAGS)
+	CFLAGS   = -Wall -O3 ${DFLAGS} $(EXTRA_FLAGS)
 endif
 
 # for gprof
@@ -62,11 +62,6 @@ else ifneq ($(avx512bw),)
 	py_SIMD_FLAG = AVX512BW=1
 endif
 
-# Let CACTUS_ARCH override this (it'll add -march to CFLAGS) in order to avoid -march native for more portable binaries
-ifneq ($(CACTUS_ARCH),)
-	SIMD_FLAG =
-endif
-
 .c.o:
 		$(CC) -c $(CFLAGS) $< -o $@
 
@@ -107,7 +102,7 @@ $(SRC_DIR)/simd_abpoa_align.o:$(SRC_DIR)/simd_abpoa_align.c $(SRC_DIR)/abpoa_gra
 
 install_py: python/cabpoa.pxd python/pyabpoa.pyx python/README.md
 	${py_SIMD_FLAG} python setup.py install
-
+	
 sdist: install_py
 	${py_SIMD_FLAG} python setup.py sdist #bdist_wheel
 
