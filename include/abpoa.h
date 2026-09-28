@@ -2,6 +2,7 @@
 #define ABPOA_H
 
 #include <stdint.h>
+#include <stdio.h> // FILE, in the output functions below
 
 #define ABPOA_GLOBAL_MODE 0
 #define ABPOA_LOCAL_MODE  1
