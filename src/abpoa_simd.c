@@ -23,6 +23,7 @@ abpoa_simd_matrix_t *abpoa_init_simd_matrix(void) {
     abpoa_simd_matrix_t *abm = (abpoa_simd_matrix_t*)_err_malloc(sizeof(abpoa_simd_matrix_t));
     abm->s_msize = 0; abm->s_mem = NULL; abm->rang_m = 0;
     abm->dp_beg = NULL; abm->dp_end = NULL; abm->dp_beg_sn = NULL; abm->dp_end_sn = NULL;
+    abm->dp_row = NULL; abm->dp_row_w = NULL;
     return abm;
 }
 
@@ -30,6 +31,7 @@ void abpoa_free_simd_matrix(abpoa_simd_matrix_t *abm) {
     if (abm->s_mem) SIMDFree(abm->s_mem);
     if (abm->dp_beg) {
         free(abm->dp_beg); free(abm->dp_end); free(abm->dp_beg_sn); free(abm->dp_end_sn);
+        free(abm->dp_row); free(abm->dp_row_w);
     } free(abm);
 }
 
@@ -52,13 +54,17 @@ void simd_output_pre_nodes(int *pre_index, int pre_n, int dp_i, int dp_j, int cu
 int simd_abpoa_realloc(abpoa_t *ab, int gn, int qlen, abpoa_para_t *abpt, SIMD_para_t sp) {
     uint64_t pn = sp.num_of_value, size = sp.size, sn = (qlen + sp.num_of_value) / pn;
     uint64_t s_msize = sn * abpt->m * size; // qp
+    s_msize += sn * size; // qi
+    s_msize += sn * size; // a row's worth of padding before the rows, see simd_abpoa_new_row
 
-    if (abpt->gap_mode == ABPOA_LINEAR_GAP) s_msize += (sn * gn * size); // DP_H, linear
-    else if (abpt->gap_mode == ABPOA_AFFINE_GAP) s_msize += (sn * gn * 3 * size); // DP_HEF, affine
-    else s_msize += (sn * gn * 5 * size); // DP_H2E2F, convex
-
-    if (abpt->wb >= 0 || abpt->align_mode == ABPOA_LOCAL_MODE || abpt->align_mode == ABPOA_EXTEND_MODE) // qi
-        s_msize += sn * size;
+    /*
+     * The rows: each keeps only its band plus a block either side, so at most sn + 2 blocks of each of its
+     * matrices, packed from the front (see simd_abpoa_new_row).  Sized for the worst case, as when every
+     * row was stored at full width, but a band-limited DP writes only the front of it.
+     */
+    if (abpt->gap_mode == ABPOA_LINEAR_GAP) s_msize += ((sn + 2) * gn * size); // H, linear
+    else if (abpt->gap_mode == ABPOA_AFFINE_GAP) s_msize += ((sn + 2) * gn * 3 * size); // HEF, affine
+    else s_msize += ((sn + 2) * gn * 5 * size); // H2E2F, convex
 
     // if (s_msize > UINT32_MAX) {
         // err_func_format_printf(__func__, "Warning: Graph is too large or query is too long.\n");
@@ -78,6 +84,8 @@ int simd_abpoa_realloc(abpoa_t *ab, int gn, int qlen, abpoa_para_t *abpt, SIMD_p
         ab->abm->dp_end = (int*)_err_realloc(ab->abm->dp_end, ab->abm->rang_m * sizeof(int));
         ab->abm->dp_beg_sn = (int*)_err_realloc(ab->abm->dp_beg_sn, ab->abm->rang_m * sizeof(int));
         ab->abm->dp_end_sn = (int*)_err_realloc(ab->abm->dp_end_sn, ab->abm->rang_m * sizeof(int));
+        ab->abm->dp_row = (SIMDi**)_err_realloc(ab->abm->dp_row, ab->abm->rang_m * sizeof(SIMDi*));
+        ab->abm->dp_row_w = (int64_t*)_err_realloc(ab->abm->dp_row_w, ab->abm->rang_m * sizeof(int64_t));
     }
     return 0;
 }
