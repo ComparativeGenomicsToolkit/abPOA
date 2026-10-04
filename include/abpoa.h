@@ -84,6 +84,10 @@ typedef struct {
     double min_freq; // for multiploid data
     int verbose; // to control output msg
     int batch_index; // index of current file in batch mode (for output header)
+    // optional per-read scoring, indexed by input order within one abpoa_msa() call: a non-NULL
+    // entry (an abpoa_para_t *) scores that read's alignment to the graph in place of this struct.
+    // Graph construction and output still use this one.  Owned by the caller, never freed here.
+    void **read_abpt;
 
     // char LogTable65536[65536];
     // char bit_table16[65536];
