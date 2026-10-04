@@ -151,6 +151,7 @@ abpoa_para_t *abpoa_init_para(void) {
 
     abpt->verbose = ABPOA_NONE_VERBOSE;
     abpt->batch_index = 0; // 0 means not in batch mode
+    abpt->read_abpt = NULL; // every read scored with this struct
 
     // abpt->simd_flag = simd_check();
 
@@ -216,6 +217,7 @@ int abpoa_anchor_poa(abpoa_t *ab, abpoa_para_t *abpt, uint8_t **seqs, int **weig
     // uint8_t *seq1;
     for (_i = 0; _i < n_seq; ++_i) {
         i = read_id_map[_i]; read_id = exist_n_seq + i; qlen = seq_lens[i]; whole_res.n_cigar = 0, whole_res.m_cigar = 0, whole_res.graph_cigar = 0;
+        abpoa_para_t *rabpt = (abpt->read_abpt && abpt->read_abpt[i]) ? (abpoa_para_t*)abpt->read_abpt[i] : abpt;
         // fprintf(stderr, "seq: # %d\n", i);
         if (abpt->verbose >= ABPOA_DEBUG_VERBOSE) fprintf(stderr, "seq: # %d\n", i);
         // seq-to-graph alignment and add alignment within each split window
@@ -271,7 +273,7 @@ int abpoa_anchor_poa(abpoa_t *ab, abpoa_para_t *abpt, uint8_t **seqs, int **weig
             if (abpt->verbose >= ABPOA_DEBUG_VERBOSE) fprintf(stderr, "\tanchor: t: %d (id: %d), q: %d\n", end_tpos, end_id, end_qpos);
 
             res.graph_cigar = 0; res.n_cigar = 0;
-            abpoa_align_sequence_to_subgraph(ab, abpt, beg_id, end_id, qseq+beg_qpos, end_qpos-beg_qpos, &res);
+            abpoa_align_sequence_to_subgraph(ab, rabpt, beg_id, end_id, qseq+beg_qpos, end_qpos-beg_qpos, &res);
             abpoa_push_whole_cigar(&whole_res.n_cigar, &whole_res.m_cigar, &whole_res.graph_cigar, res.n_cigar, res.graph_cigar);
             if (res.n_cigar) free(res.graph_cigar);
             // abpoa_add_subgraph_alignment(ab, abpt, beg_id, end_id, qseq+beg_qpos, end_qpos-beg_qpos, qpos_to_node_id+beg_qpos, res, read_id, tot_n_seq, 1);
@@ -292,7 +294,7 @@ int abpoa_anchor_poa(abpoa_t *ab, abpoa_para_t *abpt, uint8_t **seqs, int **weig
 
         if (abpt->verbose >= ABPOA_DEBUG_VERBOSE) fprintf(stderr, "\tanchor: t: %d (id: %d), q: %d\n", end_tpos, end_id, end_qpos);
         res.graph_cigar = 0; res.n_cigar = 0;
-        abpoa_align_sequence_to_subgraph(ab, abpt, beg_id, end_id, qseq+beg_qpos, end_qpos-beg_qpos, &res);
+        abpoa_align_sequence_to_subgraph(ab, rabpt, beg_id, end_id, qseq+beg_qpos, end_qpos-beg_qpos, &res);
         abpoa_push_whole_cigar(&whole_res.n_cigar, &whole_res.m_cigar, &whole_res.graph_cigar, res.n_cigar, res.graph_cigar);
         if (res.n_cigar) free(res.graph_cigar);
 
@@ -318,10 +320,11 @@ int abpoa_poa(abpoa_t *ab, abpoa_para_t *abpt, uint8_t **seqs, int **weights, in
     // uint8_t *seq1;
     for (i = 0; i < n_seq; ++i) {
         qlen = seq_lens[i]; qseq = seqs[i]; weight = weights[i]; read_id = exist_n_seq + i;
+        abpoa_para_t *rabpt = (abpt->read_abpt && abpt->read_abpt[i]) ? (abpoa_para_t*)abpt->read_abpt[i] : abpt;
         if (abpt->verbose >= ABPOA_DEBUG_VERBOSE) fprintf(stderr, "seq: # %d\n", i);
         res.graph_cigar = 0; res.n_cigar = 0;
-        if (abpoa_align_sequence_to_graph(ab, abpt, qseq, qlen, &res) >= 0) {
-            if (abpt->amb_strand && (res.best_score < MIN_OF_TWO(qlen, ab->abg->node_n-2) * abpt->max_mat * .3333)) { // TODO .3333
+        if (abpoa_align_sequence_to_graph(ab, rabpt, qseq, qlen, &res) >= 0) {
+            if (abpt->amb_strand && (res.best_score < MIN_OF_TWO(qlen, ab->abg->node_n-2) * rabpt->max_mat * .3333)) { // TODO .3333
                 rc_qseq = (uint8_t*)_err_malloc(sizeof(uint8_t) * qlen);
                 for (j = 0; j < qlen; ++j) {
                     if (qseq[qlen-j-1] < 4) rc_qseq[j] = 3 - qseq[qlen-j-1];
@@ -332,7 +335,7 @@ int abpoa_poa(abpoa_t *ab, abpoa_para_t *abpt, uint8_t **seqs, int **weights, in
                     rc_weight[j] = weight[qlen-j-1];
                 }
                 abpoa_res_t rc_res; rc_res.n_cigar = 0, rc_res.graph_cigar = 0;
-                simd_abpoa_align_sequence_to_graph(ab, abpt, rc_qseq, qlen, &rc_res);
+                simd_abpoa_align_sequence_to_graph(ab, rabpt, rc_qseq, qlen, &rc_res);
                 if (rc_res.best_score > res.best_score) {
                     abpoa_res_copy(&res, &rc_res);
                     qseq = rc_qseq;
