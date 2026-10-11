@@ -12,6 +12,8 @@
 #   4. scores that the previous 16-bit choice could not hold (a trained model with gap extension
 #      60, which aborted with "Error in cg_backtrack") give the 32-bit result, and the same as with
 #      every score halved
+#   5. a 16-bit alignment proven safe needs no retry, even where row 0's gap on the dearer piece
+#      leaves the 16-bit range
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -118,6 +120,19 @@ for bin in $BINS; do
             [ -n "$a" ] && [ "$a" = "$b" ] || fail "$(basename "$bin") $opts $fa: chr2 model differs from it halved"
         done
     done
+done
+
+# 5: convex gaps with a gap extension above the match score: the width choice bounds the cheaper
+# piece's gap along row 0, -(24 + i), while the other piece's -(4 + 100*i) is out of 16-bit range
+# past column 327; that must neither change the result nor make a proven alignment need its retry
+fa="$BUILD_DIR/row0.fa"
+printf ">a\n%s\n>b\n%s\n" "$(randseq 5 500)" "$(randseq 6 400)" > "$fa"
+R0="-M 1 -X 4 -O 4,24 -E 100,1 -b -1 -r1"
+for bin in $BINS; do
+    same_as_plain "$bin" "$fa" $R0
+    [ "$(widths "$bin" $R0 "$fa")" = "score width: 16 bits " ] || fail "$(basename "$bin") $R0: not a 16-bit alignment"
+    n=$("$bin" $R0 -V 2 "$fa" 2>&1 >/dev/null | grep -c "redone at 32 bits" || true)
+    [ "$n" = 0 ] || fail "$(basename "$bin") $R0: a proven 16-bit alignment was redone at 32 bits"
 done
 
 if [ $ERRORS -gt 0 ]; then

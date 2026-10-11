@@ -664,6 +664,9 @@
     _end_sn = MIN_OF_TWO(dp_end_sn[0]+1, dp_sn-1);                                                      \
 }
 
+/* row 0, outside local mode: a gap along the query, each gap piece's score taken in 64 bits and clamped at
+ * inf_min.  The width choice bounds only the cheaper piece, and the other one's -(o + e*i) would wrap; clamped,
+ * it still loses to the cheaper one, and a real score that low fails the checks (simd_abpoa_check_scores) */
 #define simd_abpoa_lg_first_dp(score_t) {                                   \
     simd_abpoa_lg_first_row;                                                \
     if (abpt->align_mode == ABPOA_LOCAL_MODE) {                             \
@@ -675,7 +678,7 @@
         }                                                                   \
         _dp_h = (score_t*)dp_h;                                             \
         for (i = 0; i <= dp_end[0]; ++i) { /* no SIMD parallelization */    \
-            _dp_h[i] = -gap_ext1 * i;                                       \
+            _dp_h[i] = MAX_OF_TWO(-(int64_t)gap_ext1 * i, inf_min);         \
         }                                                                   \
     }                                                                       \
 }
@@ -692,8 +695,8 @@
         _dp_h=(score_t*)dp_h,_dp_e1=(score_t*)dp_e1,_dp_f1=(score_t*)dp_f1; \
         _dp_h[0] = 0; _dp_e1[0] = -(gap_oe1), _dp_f1[0] = inf_min;          \
         for (i = 1; i <= dp_end[0]; ++i) { /* no SIMD parallelization */    \
-            _dp_f1[i] = -gap_open1 - gap_ext1 * i;                          \
-            _dp_h[i] = -gap_open1 - gap_ext1 * i;                           \
+            _dp_f1[i] = MAX_OF_TWO(-gap_open1 - (int64_t)gap_ext1 * i, inf_min); \
+            _dp_h[i] = _dp_f1[i];                                           \
         }                                                                   \
     }                                                                       \
 }
@@ -712,8 +715,8 @@
         _dp_h[0] = 0; _dp_e1[0] = -(gap_oe1); _dp_e2[0] = -(gap_oe2);                 \
         _dp_f1[0] = _dp_f2[0] = inf_min;                                              \
         for (i = 1; i <= dp_end[0]; ++i) { /* no SIMD parallelization */              \
-            _dp_f1[i] = -gap_open1 - gap_ext1 * i;                                    \
-            _dp_f2[i] = -gap_open2 - gap_ext2 * i;                                    \
+            _dp_f1[i] = MAX_OF_TWO(-gap_open1 - (int64_t)gap_ext1 * i, inf_min);      \
+            _dp_f2[i] = MAX_OF_TWO(-gap_open2 - (int64_t)gap_ext2 * i, inf_min);      \
             _dp_h[i] = MAX_OF_TWO(_dp_f1[i], _dp_f2[i]);                              \
         }                                                                             \
     }                                                                                 \
