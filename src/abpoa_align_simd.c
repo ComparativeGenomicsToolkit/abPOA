@@ -1184,7 +1184,7 @@
 #define ABPOA_FAIL_ZONE 2 /* a stored H in (fmax, ztop] or above u */
 #define ABPOA_FAIL_BEST 4 /* the best score in (-inf, ztop] or above u */
 
-typedef struct { int64_t floor, fmax, ztop, u; int fits, feasible, proven; } abpoa_score_range_t; /* simd_abpoa_score_range */
+typedef struct { int64_t M, X, floor, fmax, ztop, u; int fits, feasible, proven; } abpoa_score_range_t; /* simd_abpoa_score_range */
 
 /* only when the width is not proven safe (see simd_abpoa_score_range), once the DP is done: every stored H of
  * every row computed (row 0 included, none after an extend-mode z-drop), for a value in (fmax, ztop] or above u.
@@ -1368,7 +1368,7 @@ static abpoa_score_range_t simd_abpoa_score_range(abpoa_para_t *abpt, int bits, 
     int64_t chain = geometry == 0 ? X + PS : geometry == 1 ? (pn + 1) * (X + PS) : (Q + 2) * (X + PS);
     int64_t growth = geometry == 0 ? 0 : geometry == 1 ? pn * M : (Q + 1) * M;
     int64_t step = MAX_OF_THREE(X + PS, OE + PS, pn / 2 * EM); // largest single subtraction
-    r.u = Q * M;
+    r.M = M; r.X = X; r.u = Q * M;
     r.floor = lo + chain + OE + pn / 2 * EM + PS;
     r.fmax = r.floor + growth;
     r.ztop = r.fmax + M + 2 * X + 2 * OE + 3 * PS;
@@ -1464,8 +1464,8 @@ int simd_abpoa_align_sequence_to_subgraph(abpoa_t *ab, abpoa_para_t *abpt, int b
 retry:
     r = bits == 16 ? &r16 : &r32;
     if (!r->fits)
-        err_fatal(__func__, "scores too large for 32-bit alignment (qlen=%d, graph rows=%d, match<=%d, mismatch>=%d, "
-                  "gap open=%d,%d, gap extension=%d,%d): scale them down.", qlen, gn, abpt->max_mat, -abpt->min_mis,
+        err_fatal(__func__, "scores too large for 32-bit alignment (qlen=%d, graph rows=%d, match<=%lld, mismatch>=%lld, "
+                  "gap open=%d,%d, gap extension=%d,%d): scale them down.", qlen, gn, (long long)r->M, -(long long)r->X,
                   abpt->gap_open1, abpt->gap_open2, gap_ext1, gap_ext2);
     aln_fail = 0; chk_zone = !r->proven; mpos_log_on = bits == 16; mpos_n = 0;
     if (bits == 16) {
@@ -1504,11 +1504,11 @@ retry:
         if (bits == 32 && aln_fail == ABPOA_FAIL_BT && r->proven) // the scores provably fit: not an overflow
             err_fatal(__func__, "Error in backtrack (32-bit DP, scores in range): qlen=%d, graph rows=%d.", qlen, gn);
         if (bits == 32)
-            err_fatal(__func__, "alignment failed its score checks at 32 bits (%s%s%s): qlen=%d, graph rows=%d, match<=%d, "
-                      "mismatch>=%d, gap open=%d,%d, gap extension=%d,%d, floor=%lld, zone=(%lld,%lld], max=%lld. "
+            err_fatal(__func__, "alignment failed its score checks at 32 bits (%s%s%s): qlen=%d, graph rows=%d, match<=%lld, "
+                      "mismatch>=%lld, gap open=%d,%d, gap extension=%d,%d, floor=%lld, zone=(%lld,%lld], max=%lld. "
                       "Scores this large cannot be aligned exactly: scale them down.",
                       aln_fail & ABPOA_FAIL_BT ? "backtrack " : "", aln_fail & ABPOA_FAIL_ZONE ? "zone " : "",
-                      aln_fail & ABPOA_FAIL_BEST ? "best" : "", qlen, gn, abpt->max_mat, -abpt->min_mis, abpt->gap_open1,
+                      aln_fail & ABPOA_FAIL_BEST ? "best" : "", qlen, gn, (long long)r->M, -(long long)r->X, abpt->gap_open1,
                       abpt->gap_open2, gap_ext1, gap_ext2, (long long)r->floor, (long long)r->fmax, (long long)r->ztop, (long long)r->u);
         if (abpt->verbose >= ABPOA_DEBUG_VERBOSE)
             fprintf(stderr, "16-bit alignment failed its score checks (%d), redone at 32 bits: qlen=%d, graph rows=%d\n", aln_fail, qlen, gn);
