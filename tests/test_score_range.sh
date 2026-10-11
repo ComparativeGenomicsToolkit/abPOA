@@ -14,6 +14,8 @@
 #      every score halved
 #   5. a 16-bit alignment proven safe needs no retry, even where row 0's gap on the dearer piece
 #      leaves the 16-bit range
+#   6. scores too large for the 32-bit bounds to prove an alignment are aligned anyway, checked, and
+#      give the same result as the scores scaled down; only scores 32 bits cannot check are refused
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -133,6 +135,23 @@ for bin in $BINS; do
     [ "$(widths "$bin" $R0 "$fa")" = "score width: 16 bits " ] || fail "$(basename "$bin") $R0: not a 16-bit alignment"
     n=$("$bin" $R0 -V 2 "$fa" 2>&1 >/dev/null | grep -c "redone at 32 bits" || true)
     [ "$n" = 0 ] || fail "$(basename "$bin") $R0: a proven 16-bit alignment was redone at 32 bits"
+done
+
+# 6: cactus's default scores times 10000 on a banded 1.2 kb window: beyond what the 32-bit bounds can
+# prove (qlen*(M+X) is above 2^31), so every alignment is checked, and the result must be that of the
+# scores themselves.  A mismatch of 8e8 leaves no room for the checks in 32 bits: refused up front.
+fa="$BUILD_DIR/big.fa"
+printf ">a\n%s\n>b\n%s\n>c\n%s\n" "$(randseq 11 1200)" "$(randseq 11 1200 0.1)" "$(randseq 11 1200 0.2)" > "$fa"
+for bin in $BINS; do
+    for opts in "-r1" "-r1 -m 2"; do
+        a=$("$bin" $opts -M 100 -X 125 -O 400,1200 -E 30,1 "$fa" 2>/dev/null) || true
+        b=$("$bin" $opts -M 1000000 -X 1250000 -O 4000000,12000000 -E 300000,10000 "$fa" 2>/dev/null) || true
+        [ -n "$a" ] && [ "$a" = "$b" ] || fail "$(basename "$bin") $opts: cactus's scores times 10000 differ from the scores"
+    done
+    if "$bin" -M 1 -X 800000000 -O 4,24 -E 2,1 -r1 test_data/seq.fa >/dev/null 2>"$BUILD_DIR/large.err" ||
+            ! grep -q "scores too large" "$BUILD_DIR/large.err"; then
+        fail "$(basename "$bin"): a mismatch of 8e8 was not refused"
+    fi
 done
 
 if [ $ERRORS -gt 0 ]; then

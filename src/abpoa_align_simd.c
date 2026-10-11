@@ -1180,46 +1180,50 @@
     }                                                                                                   \
 }
 
-#define ABPOA_FAIL_BT   1 /* the backtrack could not retrace the DP */
-#define ABPOA_FAIL_ZONE 2 /* a stored H in (fmax, ztop] or above u */
-#define ABPOA_FAIL_BEST 4 /* the best score in (-inf, ztop] or above u */
+#define ABPOA_FAIL_BT    1 /* the backtrack could not retrace the DP */
+#define ABPOA_FAIL_ZONE  2 /* a stored H in (fmax, ztop] */
+#define ABPOA_FAIL_BEST  4 /* the best score in (-inf, ztop] or above top */
+#define ABPOA_FAIL_RANGE 8 /* a stored H below low or above top: a later step could wrap */
 
-typedef struct { int64_t M, X, floor, fmax, ztop, u; int fits, feasible, proven; } abpoa_score_range_t; /* simd_abpoa_score_range */
+typedef struct { int64_t M, X, low, floor, fmax, ztop, top; int fits, feasible, proven; } abpoa_score_range_t; /* simd_abpoa_score_range */
 
 /* only when the width is not proven safe (see simd_abpoa_score_range), once the DP is done: every stored H of
- * every row computed (row 0 included, none after an extend-mode z-drop), for a value in (fmax, ztop] or above u.
- * Out of line: inside the DP function, the scan's code alone made the compiler build a slower DP loop */
+ * every row computed (row 0 included, none after an extend-mode z-drop), for a value in (fmax, ztop], below low
+ * or above top.  Out of line: inside the DP function, the scan's code alone made the compiler build a slower DP loop */
 #define simd_abpoa_zone_scan_def(name, score_t, SIMDSetOne, SIMDSetIfGreater, SIMDMax)                             \
 static ATTRIBUTE((noinline)) int name(SIMDi **dp_row, int *dp_beg_sn, int *dp_end_sn, uint8_t *row_map,           \
                                       int last_row, abpoa_score_range_t *r) {                                    \
-    union { SIMDi v; score_t s[sizeof(SIMDi) / sizeof(score_t)]; } zmin, hmax; /* lanes read at the end */      \
+    union { SIMDi v; score_t s[sizeof(SIMDi) / sizeof(score_t)]; } zmin, hmin, hmax; /* lanes read at the end */ \
     int row, sn_i, i, fail = 0;                                                                                  \
     SIMDi FMAX = SIMDSetOne((score_t)r->fmax), t, *dp_h;                                                         \
-    zmin.v = SIMDSetOne((score_t)(r->ztop + 1)); hmax.v = FMAX;                                                  \
+    zmin.v = SIMDSetOne((score_t)(r->ztop + 1)); hmin.v = hmax.v = FMAX;                                         \
     for (row = 0; row <= last_row; ++row) {                                                                      \
         if (row_map[row] == 0) continue; /* not part of the subgraph: never computed */                          \
         dp_h = dp_row[row];                                                                                      \
         for (sn_i = dp_beg_sn[row]; sn_i <= dp_end_sn[row]; ++sn_i) {                                            \
             SIMDSetIfGreater(t, dp_h[sn_i], FMAX, dp_h[sn_i], zmin.v); /* t = H > fmax ? H : ztop+1 */            \
             SIMDSetIfGreater(zmin.v, zmin.v, t, t, zmin.v);             /* min(zmin, t) */                        \
+            SIMDSetIfGreater(hmin.v, hmin.v, dp_h[sn_i], dp_h[sn_i], hmin.v);                                    \
             hmax.v = SIMDMax(hmax.v, dp_h[sn_i]);                                                                \
         }                                                                                                        \
     }                                                                                                            \
     for (i = 0; i < (int)(sizeof(SIMDi) / sizeof(score_t)); ++i) {                                              \
-        if (zmin.s[i] <= r->ztop || hmax.s[i] > r->u) fail = ABPOA_FAIL_ZONE;                                    \
+        if (zmin.s[i] <= r->ztop) fail |= ABPOA_FAIL_ZONE;                                                       \
+        if (hmin.s[i] < r->low || hmax.s[i] > r->top) fail |= ABPOA_FAIL_RANGE;                                  \
     }                                                                                                            \
     return fail;                                                                                                 \
 }
 simd_abpoa_zone_scan_def(simd_abpoa_zone_scan16, int16_t, SIMDSetOnei16, SIMDSetIfGreateri16, SIMDMaxi16)
 simd_abpoa_zone_scan_def(simd_abpoa_zone_scan32, int32_t, SIMDSetOnei32, SIMDSetIfGreateri32, SIMDMaxi32)
 
-/* a real score in (fmax, ztop] can lose to, or be confused with, a floor-derived one, and a score above
- * u can only be a wrap: either way the alignment is redone at 32 bits (simd_abpoa_align_sequence_to_subgraph) */
+/* a real score in (fmax, ztop] can lose to, or be confused with, a floor-derived one, and from a score below low
+ * or above top a later step could wrap: either way a 16-bit alignment is redone at 32 bits, and a 32-bit one
+ * stops abPOA (simd_abpoa_align_sequence_to_subgraph) */
 #define simd_abpoa_check_scores(score_t) {                                                                    \
     if (chk_zone) /* rows 0 to the last computed: the loop ran to its end, or stopped at a z-drop */          \
         aln_fail |= (sizeof(score_t) == 2 ? simd_abpoa_zone_scan16 : simd_abpoa_zone_scan32)(dp_row, dp_beg_sn, \
                      dp_end_sn, index_map + beg_index, index_i < end_index ? dp_i : dp_i - 1, r);              \
-    if ((best_i > 0 || abpt->align_mode == ABPOA_GLOBAL_MODE) && (best_score > r->u || best_score <= r->ztop))  \
+    if ((best_i > 0 || abpt->align_mode == ABPOA_GLOBAL_MODE) && (best_score > r->top || best_score <= r->ztop))\
         aln_fail |= ABPOA_FAIL_BEST;                                                                          \
 }
 
@@ -1339,8 +1343,14 @@ simd_abpoa_zone_scan_def(simd_abpoa_zone_scan32, int32_t, SIMDSetOnei32, SIMDSet
  * -(g(D) + g(qlen) + PS*D) (delete down to the row, insert across, each gap on its cheaper piece): this
  * "proves" a width.  For narrower bands that value is only an estimate (a rigorous bound is far lower), so a
  * width the estimate allows is "feasible" and is used with every stored H checked: a real H in (fmax, ztop]
- * is the first sign of the floor winning, and a value above u is a wrap, so a run that passes is exact and
- * one that fails is redone at 32 bits.  32 bits takes bounds that need no band geometry.
+ * is the first sign of the floor winning, and an H below low (the floor for a full band) or above top (u) is
+ * where a later step could wrap, so a run that passes is exact and one that fails is redone at 32 bits.
+ * 32 bits takes bounds that need no band geometry.  A 32-bit run they do not prove is checked instead, with the
+ * floor as low as the band's first SIMD block allows (floor-derived values outside it fail the checks, they do not
+ * go unseen), which leaves real scores the most room; where u does not fit either, top = min(u, MAX - M), from
+ * which no step can wrap.  Such a run stops abPOA only if a check fails.  Only scores whose zone does not fit
+ * below 0 at all, 3X + M + 3OE + pn/2*EM + 5PS >= 2^31 in 64 bits (or one of them beyond 32 bits), are refused
+ * before aligning: 32 bits cannot hold the range the checks need, so no result could be verified.
  * M/X: largest match score/mismatch penalty, OE/EM: largest gap open+extension/extension, PS: largest path
  * score penalty (20, or 0 without inc_path_score), D: rows on a path (gn bounds it), g(n): cheapest gap of n.
  */
@@ -1365,20 +1375,31 @@ static abpoa_score_range_t simd_abpoa_score_range(abpoa_para_t *abpt, int bits, 
         int64_t oe2 = (int64_t)abpt->gap_open2 + abpt->gap_ext2;
         OE = MAX_OF_TWO(OE, oe2); OEmin = MIN_OF_TWO(OEmin, oe2); EM = MAX_OF_TWO(EM, abpt->gap_ext2);
     }
-    int64_t chain = geometry == 0 ? X + PS : geometry == 1 ? (pn + 1) * (X + PS) : (Q + 2) * (X + PS);
-    int64_t growth = geometry == 0 ? 0 : geometry == 1 ? pn * M : (Q + 1) * M;
+    // n: cells on a diagonal of floor-derived values: none, the band's first SIMD block, or any column
+    int64_t n = geometry == 0 ? 0 : geometry == 1 ? pn : Q + 1, zone = M + 2 * X + 2 * OE + 3 * PS;
     int64_t step = MAX_OF_THREE(X + PS, OE + PS, pn / 2 * EM); // largest single subtraction
-    r.M = M; r.X = X; r.u = Q * M;
-    r.floor = lo + chain + OE + pn / 2 * EM + PS;
-    r.fmax = r.floor + growth;
-    r.ztop = r.fmax + M + 2 * X + 2 * OE + 3 * PS;
+    r.M = M; r.X = X; r.top = Q * M;
+    r.low = lo + X + 2 * PS + OE + pn / 2 * EM;
+    r.floor = r.low + n * (X + PS);
+    r.fmax = r.floor + n * M;
+    r.ztop = r.fmax + zone;
     int64_t low_est = -(simd_abpoa_gap_cost(abpt, D) + simd_abpoa_gap_cost(abpt, Q) + PS * D);
     int64_t low = geometry == 0 ? low_est : -(MAX_OF_TWO(X, OEmin) * (Q + D) + PS * D);
     if (abpt->align_mode == ABPOA_LOCAL_MODE) low_est = low = 0;
     // ztop < 0: the checks can only miss the floor winning if the source's score of 0 is in or under the zone
-    r.fits = pn / 2 * EM <= hi && OE <= hi && M <= hi && X <= hi && Q < hi && r.ztop < 0 && r.u + step <= hi;
+    int consts = pn / 2 * EM <= hi && OE <= hi && M <= hi && X <= hi && Q < hi;
+    r.fits = consts && r.ztop < 0 && r.top + step <= hi;
     r.feasible = r.fits && low_est > r.ztop;
     r.proven = r.feasible && low > r.ztop;
+    if (bits == 32 && !r.proven && consts && r.low + zone < 0) { // checked: the floor as low as the band allows
+        n = MIN_OF_TWO(n, pn);
+        if (r.low + n * (X + PS + M) + zone >= 0) n = (-1 - r.low - zone) / (X + PS + M);
+        r.floor = r.low + n * (X + PS);
+        r.fmax = r.floor + n * M;
+        r.ztop = r.fmax + zone;
+        if (r.top + step > hi) r.top = MIN_OF_TWO(r.top, hi - M);
+        r.fits = 1; r.feasible = low_est > r.ztop;
+    }
     return r;
 }
 
@@ -1451,14 +1472,14 @@ int simd_abpoa_align_sequence_to_subgraph(abpoa_t *ab, abpoa_para_t *abpt, int b
         char *e = getenv("ABPOA_TEST_BITS");
         if (e && atoi(e) == 32) r16.feasible = 0;
         if ((e = getenv("ABPOA_TEST_FLOOR16")) && r16.fits) {
-            int64_t d = MIN_OF_TWO(atoi(e) - r16.floor, -1 - r16.ztop); // the checks need ztop < 0
+            int64_t d = MIN_OF_TWO(MAX_OF_TWO(atoi(e), r16.low) - r16.floor, -1 - r16.ztop); // checks need ztop < 0, floor >= low
             r16.floor += d; r16.fmax += d; r16.ztop += d;
             r16.feasible = 1; r16.proven = 0;
         }
     }
 #endif
     bits = r16.feasible ? 16 : 32;
-    if (abpt->verbose >= ABPOA_DEBUG_VERBOSE) fprintf(stderr, "score width: %d bits%s\n", bits, r16.feasible && !r16.proven ? " (checked)" : "");
+    if (abpt->verbose >= ABPOA_DEBUG_VERBOSE) fprintf(stderr, "score width: %d bits%s\n", bits, (bits == 16 ? r16 : r32).proven ? "" : " (checked)");
     // what a failed 16-bit attempt changes, restored before it is redone at 32 bits
     abpoa_res_t res0 = *res; int *mpos_log = NULL, mpos_n = 0, mpos_m = 0, mpos_log_on, aln_fail, chk_zone;
 retry:
@@ -1504,12 +1525,13 @@ retry:
         if (bits == 32 && aln_fail == ABPOA_FAIL_BT && r->proven) // the scores provably fit: not an overflow
             err_fatal(__func__, "Error in backtrack (32-bit DP, scores in range): qlen=%d, graph rows=%d.", qlen, gn);
         if (bits == 32)
-            err_fatal(__func__, "alignment failed its score checks at 32 bits (%s%s%s): qlen=%d, graph rows=%d, match<=%lld, "
-                      "mismatch>=%lld, gap open=%d,%d, gap extension=%d,%d, floor=%lld, zone=(%lld,%lld], max=%lld. "
+            err_fatal(__func__, "alignment failed its score checks at 32 bits (%s%s%s%s): qlen=%d, graph rows=%d, match<=%lld, "
+                      "mismatch>=%lld, gap open=%d,%d, gap extension=%d,%d; floor=%lld, zone=(%lld,%lld], range=[%lld,%lld]. "
                       "Scores this large cannot be aligned exactly: scale them down.",
                       aln_fail & ABPOA_FAIL_BT ? "backtrack " : "", aln_fail & ABPOA_FAIL_ZONE ? "zone " : "",
-                      aln_fail & ABPOA_FAIL_BEST ? "best" : "", qlen, gn, (long long)r->M, -(long long)r->X, abpt->gap_open1,
-                      abpt->gap_open2, gap_ext1, gap_ext2, (long long)r->floor, (long long)r->fmax, (long long)r->ztop, (long long)r->u);
+                      aln_fail & ABPOA_FAIL_RANGE ? "range " : "", aln_fail & ABPOA_FAIL_BEST ? "best" : "", qlen, gn,
+                      (long long)r->M, -(long long)r->X, abpt->gap_open1, abpt->gap_open2, gap_ext1, gap_ext2, (long long)r->floor,
+                      (long long)r->fmax, (long long)r->ztop, (long long)r->low, (long long)r->top);
         if (abpt->verbose >= ABPOA_DEBUG_VERBOSE)
             fprintf(stderr, "16-bit alignment failed its score checks (%d), redone at 32 bits: qlen=%d, graph rows=%d\n", aln_fail, qlen, gn);
         *res = res0;
