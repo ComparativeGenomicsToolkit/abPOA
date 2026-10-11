@@ -481,8 +481,6 @@
     int w = abpt->wb < 0 ? qlen : abpt->wb+(int)(abpt->wf*qlen); /* when w < 0, do whole global */  \
     int best_i = 0, best_j = 0, best_id = 0, max, left_max_i=-1, right_max_i=-1;                    \
     SIMDi zero = SIMDSetZeroi(), SIMD_INF_MIN = SIMDSetOne(inf_min);                                \
-    SIMDi ZONE_FMAX = SIMDSetOne((score_t)chk_fmax), ZONE_MIN = SIMDSetOne((score_t)chk_hi);        \
-    SIMDi H_MAX = SIMD_INF_MIN; /* simd_abpoa_zone_scan */                                          \
     pn = sp.num_of_value; qp_sn = dp_sn = (matrix_col_n + pn - 1) / pn;                             \
     log_n = sp.log_num, size = sp.size; qp = abm->s_mem;                                            \
     int set_num; SIMDi *PRE_MASK, *SUF_MIN, *PRE_MIN;                                               \
@@ -1179,27 +1177,46 @@
     }                                                                                                   \
 }
 
-/* only when the width is not proven safe (see simd_abpoa_score_range): every stored H of the row,
- * min over those above fmax and max over all, tested once per alignment by simd_abpoa_check_scores */
-#define simd_abpoa_zone_scan(first_sn, last_sn, SIMDSetIfGreater, SIMDMax) { \
-    SIMDi _t;                                                                 \
-    for (sn_i = first_sn; sn_i <= last_sn; ++sn_i) {                          \
-        SIMDSetIfGreater(_t, dp_h[sn_i], ZONE_FMAX, dp_h[sn_i], ZONE_MIN);    \
-        SIMDSetIfGreater(ZONE_MIN, ZONE_MIN, _t, _t, ZONE_MIN);               \
-        H_MAX = SIMDMax(H_MAX, dp_h[sn_i]);                                   \
-    }                                                                         \
+#define ABPOA_FAIL_BT   1 /* the backtrack could not retrace the DP */
+#define ABPOA_FAIL_ZONE 2 /* a stored H in (fmax, ztop] or above u */
+#define ABPOA_FAIL_BEST 4 /* the best score in (-inf, ztop] or above u */
+
+typedef struct { int64_t floor, fmax, ztop, u; int fits, feasible, proven; } abpoa_score_range_t; /* simd_abpoa_score_range */
+
+/* only when the width is not proven safe (see simd_abpoa_score_range), once the DP is done: every stored H of
+ * every row computed (row 0 included, none after an extend-mode z-drop), for a value in (fmax, ztop] or above u.
+ * Out of line: inside the DP function, the scan's code alone made the compiler build a slower DP loop */
+#define simd_abpoa_zone_scan_def(name, score_t, SIMDSetOne, SIMDSetIfGreater, SIMDMax)                             \
+static ATTRIBUTE((noinline)) int name(SIMDi **dp_row, int *dp_beg_sn, int *dp_end_sn, uint8_t *row_map,           \
+                                      int last_row, abpoa_score_range_t *r) {                                    \
+    union { SIMDi v; score_t s[sizeof(SIMDi) / sizeof(score_t)]; } zmin, hmax; /* lanes read at the end */      \
+    int row, sn_i, i, fail = 0;                                                                                  \
+    SIMDi FMAX = SIMDSetOne((score_t)r->fmax), t, *dp_h;                                                         \
+    zmin.v = SIMDSetOne((score_t)(r->ztop + 1)); hmax.v = FMAX;                                                  \
+    for (row = 0; row <= last_row; ++row) {                                                                      \
+        if (row_map[row] == 0) continue; /* not part of the subgraph: never computed */                          \
+        dp_h = dp_row[row];                                                                                      \
+        for (sn_i = dp_beg_sn[row]; sn_i <= dp_end_sn[row]; ++sn_i) {                                            \
+            SIMDSetIfGreater(t, dp_h[sn_i], FMAX, dp_h[sn_i], zmin.v); /* t = H > fmax ? H : ztop+1 */            \
+            SIMDSetIfGreater(zmin.v, zmin.v, t, t, zmin.v);             /* min(zmin, t) */                        \
+            hmax.v = SIMDMax(hmax.v, dp_h[sn_i]);                                                                \
+        }                                                                                                        \
+    }                                                                                                            \
+    for (i = 0; i < (int)(sizeof(SIMDi) / sizeof(score_t)); ++i) {                                              \
+        if (zmin.s[i] <= r->ztop || hmax.s[i] > r->u) fail = ABPOA_FAIL_ZONE;                                    \
+    }                                                                                                            \
+    return fail;                                                                                                 \
 }
+simd_abpoa_zone_scan_def(simd_abpoa_zone_scan16, int16_t, SIMDSetOnei16, SIMDSetIfGreateri16, SIMDMaxi16)
+simd_abpoa_zone_scan_def(simd_abpoa_zone_scan32, int32_t, SIMDSetOnei32, SIMDSetIfGreateri32, SIMDMaxi32)
 
 /* a real score in (fmax, ztop] can lose to, or be confused with, a floor-derived one, and a score above
  * u can only be a wrap: either way the alignment is redone at 32 bits (simd_abpoa_align_sequence_to_subgraph) */
 #define simd_abpoa_check_scores(score_t) {                                                                    \
-    if (chk_zone) {                                                                                           \
-        score_t *_zmin = (score_t*)&ZONE_MIN, *_hmax = (score_t*)&H_MAX;                                      \
-        for (i = 0; i < pn; ++i) {                                                                            \
-            if (_zmin[i] <= chk_ztop || _hmax[i] > chk_u) aln_fail |= ABPOA_FAIL_ZONE;                        \
-        }                                                                                                     \
-    }                                                                                                         \
-    if ((best_i > 0 || abpt->align_mode == ABPOA_GLOBAL_MODE) && (best_score > chk_u || best_score <= chk_ztop)) \
+    if (chk_zone) /* rows 0 to the last computed: the loop ran to its end, or stopped at a z-drop */          \
+        aln_fail |= (sizeof(score_t) == 2 ? simd_abpoa_zone_scan16 : simd_abpoa_zone_scan32)(dp_row, dp_beg_sn, \
+                     dp_end_sn, index_map + beg_index, index_i < end_index ? dp_i : dp_i - 1, r);              \
+    if ((best_i > 0 || abpt->align_mode == ABPOA_GLOBAL_MODE) && (best_score > r->u || best_score <= r->ztop))  \
         aln_fail |= ABPOA_FAIL_BEST;                                                                          \
 }
 
@@ -1209,11 +1226,9 @@
         SIMDSub, SIMDShiftOneN, SIMDSetIfGreater, SIMDGetIfGreater) {                           \
     simd_abpoa_lg_var(score_t, sp, SIMDSetOne, SIMDShiftOneN, SIMDAdd);                         \
     simd_abpoa_lg_first_dp(score_t);                                                            \
-    if (chk_zone) simd_abpoa_zone_scan(0, _end_sn, SIMDSetIfGreater, SIMDMax);                  \
     for (index_i=beg_index+1, dp_i=1; index_i<end_index; ++index_i, ++dp_i) {                   \
         if (index_map[index_i] == 0) continue;                                                  \
         simd_abpoa_lg_dp(score_t, SIMDSetOne, SIMDShiftOneN, SIMDMax, SIMDAdd, SIMDSub);        \
-        if (chk_zone) simd_abpoa_zone_scan(beg_sn, end_sn, SIMDSetIfGreater, SIMDMax);          \
         if (abpt->align_mode == ABPOA_LOCAL_MODE) {                                             \
             simd_abpoa_max_in_row(score_t, SIMDSetIfGreater, SIMDGetIfGreater);                 \
             set_global_max_score(max, dp_i, left_max_i);                                        \
@@ -1246,11 +1261,9 @@
         SIMDSub, SIMDShiftOneN, SIMDSetIfGreater, SIMDGetIfGreater, SIMDSetIfEqual) {               \
     simd_abpoa_ag_var(score_t, sp, SIMDSetOne, SIMDShiftOneN, SIMDAdd);                             \
     simd_abpoa_ag_first_dp(score_t);                                                                \
-    if (chk_zone) simd_abpoa_zone_scan(0, _end_sn, SIMDSetIfGreater, SIMDMax);                      \
     for (index_i=beg_index+1, dp_i=1; index_i<end_index; ++index_i, ++dp_i) {                       \
         if (index_map[index_i] == 0) continue;                                                      \
         simd_abpoa_ag_dp(score_t, SIMDSetOne, SIMDShiftOneN, SIMDMax, SIMDAdd, SIMDSub, SIMDGetIfGreater, SIMDSetIfGreater, SIMDSetIfEqual); \
-        if (chk_zone) simd_abpoa_zone_scan(beg_sn, end_sn, SIMDSetIfGreater, SIMDMax);              \
         if (abpt->align_mode == ABPOA_LOCAL_MODE) {                                                 \
             simd_abpoa_max_in_row(score_t, SIMDSetIfGreater, SIMDGetIfGreater);                     \
             set_global_max_score(max, dp_i, left_max_i);                                            \
@@ -1282,11 +1295,9 @@
         SIMDSub, SIMDShiftOneN, SIMDSetIfGreater, SIMDGetIfGreater, SIMDSetIfEqual) {                 \
     simd_abpoa_cg_var(score_t, sp, SIMDSetOne, SIMDShiftOneN, SIMDAdd);                               \
     simd_abpoa_cg_first_dp(score_t);                                                                  \
-    if (chk_zone) simd_abpoa_zone_scan(0, _end_sn, SIMDSetIfGreater, SIMDMax);                        \
     for (index_i=beg_index+1, dp_i=1; index_i<end_index; ++index_i, ++dp_i) {                         \
         if (index_map[index_i] == 0) continue;                                                        \
         simd_abpoa_cg_dp(score_t, SIMDSetOne, SIMDShiftOneN, SIMDMax, SIMDAdd, SIMDSub, SIMDGetIfGreater, SIMDSetIfGreater, SIMDSetIfEqual); \
-        if (chk_zone) simd_abpoa_zone_scan(beg_sn, end_sn, SIMDSetIfGreater, SIMDMax);                \
         if (abpt->align_mode == ABPOA_LOCAL_MODE) {                                                   \
             simd_abpoa_max_in_row(score_t, SIMDSetIfGreater, SIMDGetIfGreater);                       \
             set_global_max_score(max, dp_i, left_max_i);                                              \
@@ -1330,12 +1341,6 @@
  * M/X: largest match score/mismatch penalty, OE/EM: largest gap open+extension/extension, PS: largest path
  * score penalty (20, or 0 without inc_path_score), D: rows on a path (gn bounds it), g(n): cheapest gap of n.
  */
-#define ABPOA_FAIL_BT   1 /* the backtrack could not retrace the DP */
-#define ABPOA_FAIL_ZONE 2 /* a stored H in (fmax, ztop] or above u */
-#define ABPOA_FAIL_BEST 4 /* the best score in (-inf, ztop] or above u */
-
-typedef struct { int64_t floor, fmax, ztop, u; int fits, feasible, proven; } abpoa_score_range_t;
-
 static int64_t simd_abpoa_gap_cost(abpoa_para_t *abpt, int64_t n) {
     if (n <= 0) return 0;
     int64_t c = (abpt->gap_mode == ABPOA_LINEAR_GAP ? 0 : abpt->gap_open1) + (int64_t)abpt->gap_ext1 * n;
@@ -1453,7 +1458,6 @@ int simd_abpoa_align_sequence_to_subgraph(abpoa_t *ab, abpoa_para_t *abpt, int b
     if (abpt->verbose >= ABPOA_DEBUG_VERBOSE) fprintf(stderr, "score width: %d bits%s\n", bits, r16.feasible && !r16.proven ? " (checked)" : "");
     // what a failed 16-bit attempt changes, restored before it is redone at 32 bits
     abpoa_res_t res0 = *res; int *mpos_log = NULL, mpos_n = 0, mpos_m = 0, mpos_log_on, aln_fail, chk_zone;
-    int64_t chk_fmax, chk_ztop, chk_u, chk_hi;
 retry:
     r = bits == 16 ? &r16 : &r32;
     if (!r->fits)
@@ -1461,7 +1465,6 @@ retry:
                   "gap open=%d,%d, gap extension=%d,%d): scale them down.", qlen, gn, abpt->max_mat, -abpt->min_mis,
                   abpt->gap_open1, abpt->gap_open2, gap_ext1, gap_ext2);
     aln_fail = 0; chk_zone = !r->proven; mpos_log_on = bits == 16; mpos_n = 0;
-    chk_fmax = r->fmax, chk_ztop = r->ztop, chk_u = r->u, chk_hi = bits == 16 ? INT16_MAX : INT32_MAX;
     if (bits == 16) {
         simd_p16.inf_min = (int)r->floor;
         mem_ret = simd_abpoa_realloc(ab, gn, qlen, abpt, simd_p16);
