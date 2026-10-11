@@ -12,8 +12,8 @@
 #   4. scores that the previous 16-bit choice could not hold (a trained model with gap extension
 #      60, which aborted with "Error in cg_backtrack") give the 32-bit result, and the same as with
 #      every score halved
-#   5. a 16-bit alignment proven safe needs no retry, even where row 0's gap on the dearer piece
-#      leaves the 16-bit range
+#   5. a 16-bit alignment proven safe needs no retry, and gives the 32-bit result, even where row 0's
+#      gap on the dearer piece leaves the 16-bit range
 #   6. scores too large for the 32-bit bounds to prove an alignment are aligned anyway, checked, and
 #      give the same result as the scores scaled down; only scores 32 bits cannot check are refused
 set -e
@@ -135,6 +135,14 @@ for bin in $BINS; do
     [ "$(widths "$bin" $R0 "$fa")" = "score width: 16 bits " ] || fail "$(basename "$bin") $R0: not a 16-bit alignment"
     n=$("$bin" $R0 -V 2 "$fa" 2>&1 >/dev/null | grep -c "redone at 32 bits" || true)
     [ "$n" = 0 ] || fail "$(basename "$bin") $R0: a proven 16-bit alignment was redone at 32 bits"
+done
+# the same with a trained-like model whose first gap extension (346) is above the match score (210),
+# on divergent sequences: before row 0 was clamped, no check fired here and the result was wrong
+fa="$BUILD_DIR/row0b.fa"; : > "$fa"
+for j in $(seq 1 12); do printf ">m%d\n%s\n" $j "$(randseq 10 150 "$(awk -v j=$j 'BEGIN { print 0.05 * j }')")" >> "$fa"; done
+for j in 1 2 3; do printf ">u%d\n%s\n" $j "$(randseq $((1000 + j)) $((20 * j)))" >> "$fa"; done
+for bin in $BINS; do
+    same_as_plain "$bin" "$fa" -M 210 -X 1020 -O 871,2479 -E 346,2 -b 1000 -f 0.1 -p -r1
 done
 
 # 6: cactus's default scores times 10000 on a banded 1.2 kb window: beyond what the 32-bit bounds can
