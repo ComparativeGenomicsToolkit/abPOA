@@ -49,6 +49,21 @@ if [ -f bin/abpoa ]; then
     else
         echo "FAIL"; FAIL=$((FAIL + 1)); ERRORS="$ERRORS\n  - heter regression"
     fi
+
+    # a trained model with gap extension 60, which the 16-bit DP could not hold ("Error in
+    # cg_backtrack"): every score halved is the same model, so the output must not change
+    printf "  %-45s " "large scores match the same scores halved"
+    ok=1
+    for opts in "-r1" "-r1 -b -1" "-r1 -b 1000 -f 0.1 -p"; do
+        a=$(./bin/abpoa test_data/seq.fa $opts -M 210 -X 1020 -O 1290,3870 -E 60,2 2>/dev/null) || ok=0
+        b=$(./bin/abpoa test_data/seq.fa $opts -M 105 -X 510 -O 645,1935 -E 30,1 2>/dev/null) || ok=0
+        [ -n "$a" ] && [ "$a" = "$b" ] || ok=0
+    done
+    if [ $ok = 1 ]; then
+        echo "PASS"; PASS=$((PASS + 1))
+    else
+        echo "FAIL"; FAIL=$((FAIL + 1)); ERRORS="$ERRORS\n  - large score regression"
+    fi
     echo ""
 fi
 
