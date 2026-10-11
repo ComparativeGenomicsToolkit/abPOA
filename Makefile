@@ -93,6 +93,13 @@ endif
 endif
 endif
 
+# Loops of the DP aligned to 32 bytes on x86: on CPUs with Intel's JCC erratum (Skylake and its derivatives) the
+# speed of the DP otherwise depends on where unrelated code changes happen to put its loops, by up to 15%.
+# Used only if the compiler takes the flag.
+ifeq ($(ARCH), $(filter $(ARCH), x86_64 amd64))
+	LOOP_ALIGN := $(shell $(CC) -falign-loops=32 -Werror -x c -c /dev/null -o /dev/null 2>/dev/null && echo -falign-loops=32)
+endif
+
 # some more possible overrides
 FLAG_SSE2     = -msse2
 FLAG_SSE41    = -msse4.1
@@ -182,16 +189,16 @@ $(SRC_DIR)/simd_check.o:$(SRC_DIR)/simd_check.c $(SRC_DIR)/simd_instruction.h
 	$(CC) -c $(CFLAGS) $(SIMD_FLAG) -I$(INC_DIR) $< -o $@
 
 $(SRC_DIR)/abpoa_align_simd.o:$(SRC_DIR)/abpoa_align_simd.c $(SRC_DIR)/abpoa_graph.h $(SRC_DIR)/abpoa_align.h $(SRC_DIR)/simd_instruction.h $(SRC_DIR)/utils.h
-	$(CC) -c $(CFLAGS) $(SIMD_FLAG) -I$(INC_DIR) $< -o $@
+	$(CC) -c $(CFLAGS) $(LOOP_ALIGN) $(SIMD_FLAG) -I$(INC_DIR) $< -o $@
 
 $(SRC_DIR)/abpoa_align_simd_sse2.o:$(SRC_DIR)/abpoa_align_simd.c $(SRC_DIR)/abpoa_graph.h $(SRC_DIR)/abpoa_align.h $(SRC_DIR)/simd_instruction.h $(SRC_DIR)/utils.h
-	$(CC) -c $(CFLAGS) -DABPOA_SIMD_DISPATCH -msse2 -U__SSE4_1__ -I$(INC_DIR) $< -o $@
+	$(CC) -c $(CFLAGS) $(LOOP_ALIGN) -DABPOA_SIMD_DISPATCH -msse2 -U__SSE4_1__ -I$(INC_DIR) $< -o $@
 $(SRC_DIR)/abpoa_align_simd_sse41.o:$(SRC_DIR)/abpoa_align_simd.c $(SRC_DIR)/abpoa_graph.h $(SRC_DIR)/abpoa_align.h $(SRC_DIR)/simd_instruction.h $(SRC_DIR)/utils.h
-	$(CC) -c $(CFLAGS) -DABPOA_SIMD_DISPATCH -msse4.1 -I$(INC_DIR) $< -o $@
+	$(CC) -c $(CFLAGS) $(LOOP_ALIGN) -DABPOA_SIMD_DISPATCH -msse4.1 -I$(INC_DIR) $< -o $@
 $(SRC_DIR)/abpoa_align_simd_avx2.o:$(SRC_DIR)/abpoa_align_simd.c $(SRC_DIR)/abpoa_graph.h $(SRC_DIR)/abpoa_align.h $(SRC_DIR)/simd_instruction.h $(SRC_DIR)/utils.h
-	$(CC) -c $(CFLAGS) -DABPOA_SIMD_DISPATCH -mavx2 -I$(INC_DIR) $< -o $@
+	$(CC) -c $(CFLAGS) $(LOOP_ALIGN) -DABPOA_SIMD_DISPATCH -mavx2 -I$(INC_DIR) $< -o $@
 $(SRC_DIR)/abpoa_align_simd_avx512bw.o:$(SRC_DIR)/abpoa_align_simd.c $(SRC_DIR)/abpoa_graph.h $(SRC_DIR)/abpoa_align.h $(SRC_DIR)/simd_instruction.h $(SRC_DIR)/utils.h
-	$(CC) -c $(CFLAGS) -DABPOA_SIMD_DISPATCH -mavx512bw -I$(INC_DIR) $< -o $@
+	$(CC) -c $(CFLAGS) $(LOOP_ALIGN) -DABPOA_SIMD_DISPATCH -mavx512bw -I$(INC_DIR) $< -o $@
 $(SRC_DIR)/abpoa_dispatch_simd_sse2.o:$(SRC_DIR)/abpoa_dispatch_simd.c $(SRC_DIR)/abpoa.h
 	$(CC) -c $(CFLAGS) -DABPOA_SIMD_DISPATCH -msse2 -U__SSE4_1__ -I$(INC_DIR) $< -o $@
 $(SRC_DIR)/abpoa_dispatch_simd_sse41.o:$(SRC_DIR)/abpoa_dispatch_simd.c $(SRC_DIR)/abpoa.h
