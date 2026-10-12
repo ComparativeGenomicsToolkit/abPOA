@@ -1522,8 +1522,9 @@ retry:
         }
     }
     if (aln_fail) {
-        if (bits == 32 && aln_fail == ABPOA_FAIL_BT && r->proven) // the scores provably fit: not an overflow
-            err_fatal(__func__, "Error in backtrack (32-bit DP, scores in range): qlen=%d, graph rows=%d.", qlen, gn);
+        if (bits == 32 && r->proven) // the scores provably fit: not an overflow
+            err_fatal(__func__, "Error in %s (32-bit DP, scores in range): qlen=%d, graph rows=%d.",
+                      aln_fail == ABPOA_FAIL_BT ? "backtrack" : "alignment, its score checks failed", qlen, gn);
         if (bits == 32)
             err_fatal(__func__, "alignment failed its score checks at 32 bits (%s%s%s%s): qlen=%d, graph rows=%d, match<=%lld, "
                       "mismatch>=%lld, gap open=%d,%d, gap extension=%d,%d; floor=%lld, zone=(%lld,%lld], range=[%lld,%lld]. "
