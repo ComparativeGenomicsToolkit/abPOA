@@ -1,11 +1,54 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <errno.h>
+#include <stdint.h>
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/mman.h>
+#endif
 #include "abpoa.h"
 #include "abpoa_align.h"
 #include "abpoa_simd.h"
 #include "abpoa_simd_internal.h"
 #include "utils.h"
+
+/* The DP's block is sized for the worst case, every row at full width, but a banded DP writes only the
+ * front of it (see simd_abpoa_new_row), so most of a large block is never touched.  Linux, under its
+ * default overcommit policy, refuses an allocation larger than its memory and swap however little of it is
+ * touched, so a block of ABPOA_MAP_MIN bytes or more is mapped with MAP_NORESERVE, which it does not count
+ * against them: only the pages written take memory.  A smaller block is an ordinary aligned allocation, as
+ * is every block where mapping is not available.  Which one a block is follows from its size, so freeing it
+ * needs nothing more.  Either way the alignment is the same. */
+#if (defined(__unix__) || defined(__APPLE__)) && defined(MAP_NORESERVE) && defined(MAP_ANONYMOUS)
+#define ABPOA_MAP_MIN (64ULL << 20)
+#else
+#define ABPOA_MAP_MIN UINT64_MAX
+#endif
+
+static SIMDi *abpoa_matrix_alloc(uint64_t size, uint64_t align) {
+#if (defined(__unix__) || defined(__APPLE__)) && defined(MAP_NORESERVE) && defined(MAP_ANONYMOUS)
+    if (size >= ABPOA_MAP_MIN) {
+        void *p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        if (p == MAP_FAILED) {
+            fprintf(stderr, "[%s] mmap fail! Size: %llu, Error: %d\n", __func__, (unsigned long long)size, errno);
+            exit(1);
+        }
+        return (SIMDi*)p; // page-aligned, so aligned for any SIMD width
+    }
+#endif
+    return (SIMDi*)SIMDMalloc(size, align);
+}
+
+static void abpoa_matrix_free(SIMDi *p, uint64_t size) {
+#if (defined(__unix__) || defined(__APPLE__)) && defined(MAP_NORESERVE) && defined(MAP_ANONYMOUS)
+    if (size >= ABPOA_MAP_MIN) {
+        munmap(p, size);
+        return;
+    }
+#endif
+    (void)size;
+    SIMDFree(p);
+}
 
 #define simd_abpoa_print_cg_matrix(score_t, beg_index, end_index) {                                          \
     for (j = 0; j < end_index-beg_index; ++j) {                                                              \
@@ -28,7 +71,7 @@ abpoa_simd_matrix_t *abpoa_init_simd_matrix(void) {
 }
 
 void abpoa_free_simd_matrix(abpoa_simd_matrix_t *abm) {
-    if (abm->s_mem) SIMDFree(abm->s_mem);
+    if (abm->s_mem) abpoa_matrix_free(abm->s_mem, abm->s_msize);
     if (abm->dp_beg) {
         free(abm->dp_beg); free(abm->dp_end); free(abm->dp_beg_sn); free(abm->dp_end_sn);
         free(abm->dp_row); free(abm->dp_row_w);
@@ -73,9 +116,9 @@ int simd_abpoa_realloc(abpoa_t *ab, int gn, int qlen, abpoa_para_t *abpt, SIMD_p
     if (abpt->verbose >= ABPOA_DEBUG_VERBOSE)
         fprintf(stderr, "realloc: graph_node %lld, qlen: %d, (%lld, %lld)\n", (long long)gn, qlen, (long long)ab->abm->s_msize, (long long)s_msize);
     if (s_msize > ab->abm->s_msize) {
-        if (ab->abm->s_mem) SIMDFree(ab->abm->s_mem);
+        if (ab->abm->s_mem) abpoa_matrix_free(ab->abm->s_mem, ab->abm->s_msize);
         kroundup64(s_msize); ab->abm->s_msize = s_msize;
-        ab->abm->s_mem = (SIMDi*)SIMDMalloc(ab->abm->s_msize, size);
+        ab->abm->s_mem = abpoa_matrix_alloc(ab->abm->s_msize, size);
     }
 
     if (gn > ab->abm->rang_m) {
